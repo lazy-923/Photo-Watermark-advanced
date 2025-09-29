@@ -8,6 +8,7 @@ import os
 
 class ImageProcessor:
     """图像处理类"""
+    SUPPORTED_FORMATS = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']
     
     def __init__(self):
         self._image = None
