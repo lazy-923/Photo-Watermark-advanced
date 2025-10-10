@@ -7,81 +7,32 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                            QDialogButtonBox, QFormLayout, QComboBox,
                            QListWidgetItem)
 from .template_dialog import TemplateDialog
+from .export_dialog import ExportDialog
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QPixmap, QIcon, QDragEnterEvent, QDropEvent
 import os
-from core.image_processor import ImageProcessor
+from ..core.image_processor import ImageProcessor
 from .watermark_editor import WatermarkEditor
 from .preview_panel import PreviewPanel
 
-class ExportDialog(QDialog):
-    """导出设置对话框"""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("导出设置")
-        self.setup_ui()
-        
-    def setup_ui(self):
-        """设置用户界面"""
-        layout = QFormLayout(self)
-        
-        # 输出目录选择
-        self.output_dir = QLineEdit()
-        browse_btn = QPushButton("浏览...")
-        browse_btn.clicked.connect(self.browse_output_dir)
-        dir_layout = QHBoxLayout()
-        dir_layout.addWidget(self.output_dir)
-        dir_layout.addWidget(browse_btn)
-        layout.addRow("输出目录:", dir_layout)
-        
-        # 文件名设置
-        self.prefix = QLineEdit()
-        layout.addRow("文件名前缀:", self.prefix)
-        
-        self.suffix = QLineEdit()
-        self.suffix.setText("_watermarked")
-        layout.addRow("文件名后缀:", self.suffix)
-        
-        # 格式选择
-        self.format = QComboBox()
-        self.format.addItems(["JPEG", "PNG"])
-        layout.addRow("输出格式:", self.format)
-        
-        # 质量设置
-        self.quality = QSpinBox()
-        self.quality.setRange(1, 100)
-        self.quality.setValue(95)
-        layout.addRow("图片质量:", self.quality)
-        
-        # 按钮
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok |
-            QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
-        
-    def browse_output_dir(self):
-        """选择输出目录"""
-        dir_path = QFileDialog.getExistingDirectory(self, "选择输出目录")
-        if dir_path:
-            self.output_dir.setText(dir_path)
-            
+
 class MainWindow(QMainWindow):
     """主窗口类"""
-    
+
     def __init__(self):
         super().__init__()
-        self.current_image_path = None
-        self.init_ui()
-        
-    def init_ui(self):
+        self._current_file = None
+        self.image_settings = {}  # 用于存储每个图片的设置
+        self._init_ui()
+
+    def _init_ui(self):
         """初始化用户界面"""
         self.setWindowTitle('图片水印工具')
-        self.setGeometry(100, 100, 960, 600)
+        self.setGeometry(100, 100, 900, 500)  # 稍微增大了窗口尺寸
         
+        # 允许拖放
+        self.setAcceptDrops(True)
+
         # 创建中央部件
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -89,23 +40,19 @@ class MainWindow(QMainWindow):
         # 创建主布局
         main_layout = QHBoxLayout(central_widget)
         
-        # 左侧面板（图片列表和水印设置）
+        # --- 左侧面板 (图片列表) ---
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        
-        # 图片列表组
-        image_list_group = QVBoxLayout()
         
         # 添加图片按钮
         add_image_btn = QPushButton('添加图片')
         add_image_btn.clicked.connect(self.add_images)
-        image_list_group.addWidget(add_image_btn)
+        left_layout.addWidget(add_image_btn)
         
         # 图片列表
         self.image_list = QListWidget()
-        self.image_list.setIconSize(QSize(60, 60))
-        self.image_list.currentItemChanged.connect(self.on_image_selected)
-        image_list_group.addWidget(self.image_list)
+        self.image_list.setIconSize(QSize(80, 80)) # 增大了缩略图尺寸
+        left_layout.addWidget(self.image_list)
         
         # 工具按钮布局
         tool_btn_layout = QHBoxLayout()
@@ -120,22 +67,33 @@ class MainWindow(QMainWindow):
         export_btn.clicked.connect(self.export_images)
         tool_btn_layout.addWidget(export_btn)
         
-        image_list_group.addLayout(tool_btn_layout)
+        left_layout.addLayout(tool_btn_layout)
         
-        left_layout.addLayout(image_list_group)
-        
-        # 水印编辑器
-        self.watermark_editor = WatermarkEditor()
-        self.watermark_editor.watermarkChanged.connect(self.update_preview)
-        left_layout.addWidget(self.watermark_editor)
-        
-        # 右侧预览面板
+        # --- 中间面板 (预览) ---
         self.preview_panel = PreviewPanel()
         
-        # 添加到主布局
-        main_layout.addWidget(left_panel, 1)  # 1:2 比例
-        main_layout.addWidget(self.preview_panel, 2)
+        # --- 右侧面板 (水印编辑器) ---
+        self.watermark_editor = WatermarkEditor()
         
+        # 添加到主布局
+        main_layout.addWidget(left_panel, 1)
+        main_layout.addWidget(self.preview_panel, 4)
+        main_layout.addWidget(self.watermark_editor, 2)
+        
+        # 连接信号和槽
+        self.image_list.itemSelectionChanged.connect(self._on_file_selected)
+        self.watermark_editor.watermarkChanged.connect(self._on_watermark_changed)
+        
+        # 拖拽结束后，使用最终位置更新编辑器
+        self.preview_panel.watermarkDragFinished.connect(self.watermark_editor.update_position)
+        
+        # 如果需要实时显示坐标，可以连接watermarkMoved信号到一个专门的槽
+        # self.preview_panel.watermarkMoved.connect(self.update_coords_display) 
+
+        # self.action_open.triggered.connect(self._open_files)
+        # self.action_save_as.triggered.connect(self._save_file_as)
+        # self.action_exit.triggered.connect(self.close)
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         """拖动进入事件"""
         if event.mimeData().hasUrls():
@@ -171,7 +129,7 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, file_path)
             self.image_list.addItem(item)
             
-            # ��果是第一张图片，则选中
+            # 果是第一张图片，则选中
             if self.image_list.count() == 1:
                 self.image_list.setCurrentRow(0)
         except Exception as e:
@@ -191,20 +149,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"添加图片时出错：\\n{str(e)}")
                 
-    def on_image_selected(self, current, previous):
-        """图片选择改变时的处理"""
-        if current:
-            image_path = current.data(Qt.ItemDataRole.UserRole)
-            self.current_image_path = image_path
-            self.preview_panel.load_image(image_path)
-            self.update_preview()
-            
-    def update_preview(self):
-        """更新预览"""
-        if self.current_image_path:
-            settings = self.watermark_editor.get_settings()
-            self.preview_panel.update_watermark(settings)
-            
     def show_template_dialog(self):
         """显示模板管理对话框"""
         dialog = TemplateDialog(self)
@@ -241,7 +185,7 @@ class MainWindow(QMainWindow):
             self.watermark_editor.position = settings['position']
         
         # 更新预览
-        self.update_preview()
+        self._on_watermark_changed(self.watermark_editor.get_settings())
         
     def export_images(self):
         """导出处理图片"""
@@ -302,3 +246,51 @@ class MainWindow(QMainWindow):
                 processor.save_image(output_path, quality=quality, format=format)
                 
             QMessageBox.information(self, "完成", "图片处理完成！")
+
+    def _on_file_selected(self):
+        """当文件列表中的选择项改变时调用"""
+        selected_items = self.image_list.selectedItems()
+        if not selected_items:
+            self._current_file = None
+            return
+
+        # 1. 保存当前图片的设置（如果存在）
+        if self._current_file:
+            current_settings = self.watermark_editor.get_settings()
+            self.image_settings[self._current_file] = current_settings
+
+        # 2. 加载新图片
+        new_file_path = selected_items[0].data(Qt.ItemDataRole.UserRole)
+        self._current_file = new_file_path
+        self.preview_panel.load_image(new_file_path)
+
+        # 3. 加载新图片的设置
+        if new_file_path in self.image_settings:
+            settings = self.image_settings[new_file_path]
+            self.watermark_editor.set_settings(settings)
+        else:
+            # 如果没有，则重置为默认设置
+            default_settings = {
+                'text': '', 'font_name': 'Arial', 'font_size': 36,
+                'color': (0, 0, 0), 'opacity': 255, 'rotation': 0,
+                'scale': 1.0, 'image_path': None, 'position': (0.05, 0.05)
+            }
+            self.image_settings[new_file_path] = default_settings
+            self.watermark_editor.set_settings(default_settings)
+            
+        # 4. 更新预览（set_settings会触发watermarkChanged，所以这里可能重复，但为了确保逻辑清晰）
+        self._on_watermark_changed(self.watermark_editor.get_settings())
+
+
+    def _on_watermark_changed(self, settings: dict):
+        """当水印设置改变时调用"""
+        if self._current_file:
+            # 更新预览
+            self.preview_panel.update_watermark(settings)
+            # 保存当前设置
+            self.image_settings[self._current_file] = settings
+
+    def _open_files(self):
+        """打开一个或多个图片文件"""
+        # This method is not fully implemented or connected
+        self.add_images()

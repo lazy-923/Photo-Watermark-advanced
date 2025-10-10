@@ -15,6 +15,8 @@ class ImageProcessor:
         self._original_image = None
         self._watermark_settings = {}
         self._watermark_image = None  # 用于存储水印图片
+        self._current_watermark_layer = None # 用于存储当前水印图层
+        self._watermark_bbox = None # (x, y, width, height)
         self.reset_watermark_settings()
 
     def reset_watermark_settings(self):
@@ -27,9 +29,11 @@ class ImageProcessor:
             'opacity': 255,
             'rotation': 0,
             'scale': 1.0,
-            'position': (0, 0),
+            'position': (0.05, 0.05),  # 使用相对位置 (0.0-1.0)
         }
         self._watermark_image = None # 重置时也清除水印图片
+        self._current_watermark_layer = None
+        self._watermark_bbox = None
 
     def load_image(self, image_path: str) -> bool:
         """加载图片
@@ -77,6 +81,10 @@ class ImageProcessor:
             return self._image.size
         return (0, 0)
             
+    def get_watermark_bounding_box(self) -> Optional[Tuple[int, int, int, int]]:
+        """获取当前水印的边界框 (x, y, width, height)"""
+        return self._watermark_bbox
+
     def set_watermark_text(self, text: str) -> None:
         """设置水印文本
         
@@ -111,11 +119,11 @@ class ImageProcessor:
         """
         self._watermark_settings['opacity'] = max(0, min(255, opacity))
         
-    def set_watermark_position(self, position: Tuple[int, int]) -> None:
-        """设置水印九宫格位置
+    def set_watermark_position(self, position: Tuple[float, float]) -> None:
+        """设置水印相对位置
         
         Args:
-            position: (x, y) 九宫格坐标 (0-2)
+            position: (x, y) 相对位置 (0.0-1.0)
         """
         self._watermark_settings['position'] = position
         
@@ -135,28 +143,6 @@ class ImageProcessor:
         """
         self._watermark_settings['scale'] = scale
         
-    def _calculate_pixel_position(self, grid_pos: tuple, watermark_size: tuple) -> tuple:
-        """根据九宫格位置计算实际像素坐标"""
-        if not self._image:
-            return (0, 0)
-
-        img_width, img_height = self.get_image_size()
-        watermark_width, watermark_height = watermark_size
-
-        x_map = {
-            0: 10,  # a little margin
-            1: (img_width - watermark_width) // 2,
-            2: img_width - watermark_width - 10
-        }
-
-        y_map = {
-            0: 10,
-            1: (img_height - watermark_height) // 2,
-            2: img_height - watermark_height - 10
-        }
-
-        return (int(x_map.get(grid_pos[0], 0)), int(y_map.get(grid_pos[1], 0)))
-
     def add_text_watermark(self) -> bool:
         """添加文本水印
         
@@ -164,6 +150,10 @@ class ImageProcessor:
             bool: 是否成功添加水印
         """
         if self._image is None or not self._watermark_settings['text']:
+            self._watermark_bbox = None
+            self._current_watermark_layer = None
+            if self._original_image:
+                self._image = self._original_image.copy()
             return False
             
         try:
@@ -188,7 +178,7 @@ class ImageProcessor:
                 (0, 0),
                 self._watermark_settings['text'],
                 font=font,
-                anchor='lt'  # 使用左上角作为定位点
+                anchor='lt'
             )
             text_width = text_bbox[2] - text_bbox[0]
             text_height = text_bbox[3] - text_bbox[1]
@@ -203,7 +193,7 @@ class ImageProcessor:
                 self._watermark_settings['text'],
                 font=font,
                 fill=(*self._watermark_settings['color'], self._watermark_settings['opacity']),
-                anchor='lt'  # 使用左上角作为定位点
+                anchor='lt'
             )
             
             # 旋转文本
@@ -213,17 +203,26 @@ class ImageProcessor:
                     expand=True,
                     fillcolor=(255, 255, 255, 0)
                 )
+
+            self._current_watermark_layer = text_layer
             
             # 计算像素位置
-            pixel_pos = self._calculate_pixel_position(
-                self._watermark_settings['position'],
-                text_layer.size
-            )
+            img_width, img_height = self.get_image_size()
+            wm_width, wm_height = text_layer.size
+            rel_x, rel_y = self._watermark_settings['position']
             
+            pixel_x = int(rel_x * (img_width - wm_width))
+            pixel_y = int(rel_y * (img_height - wm_height))
+            
+            pixel_x = max(0, min(pixel_x, img_width - wm_width))
+            pixel_y = max(0, min(pixel_y, img_height - wm_height))
+
+            self._watermark_bbox = (pixel_x, pixel_y, wm_width, wm_height)
+
             # 粘贴到水印图层
             watermark.paste(
                 text_layer,
-                pixel_pos,
+                (pixel_x, pixel_y),
                 text_layer
             )
             
@@ -236,6 +235,8 @@ class ImageProcessor:
             
         except Exception as e:
             print(f"Error adding text watermark: {e}")
+            self._watermark_bbox = None
+            self._current_watermark_layer = None
             return False
     
     def add_image_watermark(self, image_path: str) -> bool:
@@ -247,10 +248,17 @@ class ImageProcessor:
         Returns:
             bool: 是否成功添加水印
         """
-        if self._image is None:
+        if self._image is None or not image_path:
+            self._watermark_bbox = None
+            self._current_watermark_layer = None
+            if self._original_image:
+                self._image = self._original_image.copy()
             return False
             
         try:
+            # 恢复原始图片
+            self._image = self._original_image.copy()
+
             # 加载水印图片
             watermark_img = Image.open(image_path)
             
@@ -273,15 +281,24 @@ class ImageProcessor:
             
             # 调整不透明度
             if self._watermark_settings['opacity'] != 255:
-                watermark_img.putalpha(ImageEnhance.Brightness(
-                    watermark_img.getchannel('A')
-                ).enhance(self._watermark_settings['opacity'] / 255.0))
-            
+                alpha = watermark_img.getchannel('A')
+                alpha = ImageEnhance.Brightness(alpha).enhance(self._watermark_settings['opacity'] / 255.0)
+                watermark_img.putalpha(alpha)
+
+            self._current_watermark_layer = watermark_img
+
             # 计算像素位置
-            pixel_pos = self._calculate_pixel_position(
-                self._watermark_settings['position'],
-                watermark_img.size
-            )
+            img_width, img_height = self.get_image_size()
+            wm_width, wm_height = watermark_img.size
+            rel_x, rel_y = self._watermark_settings['position']
+
+            pixel_x = int(rel_x * (img_width - wm_width))
+            pixel_y = int(rel_y * (img_height - wm_height))
+
+            pixel_x = max(0, min(pixel_x, img_width - wm_width))
+            pixel_y = max(0, min(pixel_y, img_height - wm_height))
+
+            self._watermark_bbox = (pixel_x, pixel_y, wm_width, wm_height)
             
             # 创建一个新的RGBA图层
             watermark_layer = Image.new('RGBA', self._image.size, (255, 255, 255, 0))
@@ -289,7 +306,7 @@ class ImageProcessor:
             # 粘贴水印图片
             watermark_layer.paste(
                 watermark_img,
-                pixel_pos,
+                (pixel_x, pixel_y),
                 watermark_img
             )
             
@@ -302,6 +319,8 @@ class ImageProcessor:
             
         except Exception as e:
             print(f"Error adding image watermark: {e}")
+            self._watermark_bbox = None
+            self._current_watermark_layer = None
             return False
             
     def resize_image(self, width: Optional[int] = None, height: Optional[int] = None,

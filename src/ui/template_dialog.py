@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                            QPushButton, QListWidget, QListWidgetItem,
                            QInputDialog, QMessageBox)
 from PyQt6.QtCore import pyqtSignal
-from core.template_manager import TemplateManager
+from ..core.template_manager import TemplateManager
 
 class TemplateDialog(QDialog):
     """模板管理对话框"""

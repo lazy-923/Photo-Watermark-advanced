@@ -1,11 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
 a = Analysis(
-    ['src\\main.py'],
-    pathex=['src'],
+    ['run.py'],
+    pathex=['.'],
     binaries=[],
-    datas=[],
+    datas=[('styles', 'styles')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
